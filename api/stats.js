@@ -1,7 +1,4 @@
-import { gunzipSync } from 'node:zlib';
-
 const WEEKLY_URL = 'https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2026.csv';
-const FALLBACK_URL = 'https://github.com/nflverse/nflverse-data/releases/download/player_stats/player_stats.csv.gz';
 
 function parseCSV(text) {
   const rows=[]; let row=[], cell='', quoted=false;
@@ -14,6 +11,7 @@ function parseCSV(text) {
     else cell+=c;
   }
   if(cell.length||row.length){row.push(cell);rows.push(row)}
+  if(!rows.length) return [];
   const headers=rows.shift().map(h=>h.trim());
   return rows.filter(r=>r.length).map(r=>Object.fromEntries(headers.map((h,i)=>[h,r[i]??''])));
 }
@@ -22,15 +20,19 @@ const num=v=>Number.isFinite(Number(v))?Number(v):0;
 const norm=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
 
 async function loadStats(){
-  let response=await fetch(WEEKLY_URL,{headers:{'User-Agent':'Harrison-Has-a-Tight-End/1.0'}});
-  if(response.ok){
-    return {text:await response.text(),source:'nflverse'};
+  const response=await fetch(WEEKLY_URL,{headers:{'User-Agent':'Harrison-Has-a-Tight-End/1.0'}});
+
+  // Before the regular season starts, nflverse may not have published the
+  // current-season weekly player file yet. Treat that as a valid 0-stat state.
+  if(response.status===404){
+    return {rows:[],source:'nflverse (preseason; no regular-season stats yet)'};
   }
 
-  response=await fetch(FALLBACK_URL,{headers:{'User-Agent':'Harrison-Has-a-Tight-End/1.0'}});
-  if(!response.ok)throw new Error(`nflverse returned ${response.status} for both current-season and fallback data`);
-  const compressed=Buffer.from(await response.arrayBuffer());
-  return {text:gunzipSync(compressed).toString('utf8'),source:'nflverse'};
+  if(!response.ok){
+    throw new Error(`nflverse returned ${response.status} for current-season player stats`);
+  }
+
+  return {rows:parseCSV(await response.text()),source:'nflverse'};
 }
 
 function summary(rows,name,team,number){
@@ -51,8 +53,8 @@ function summary(rows,name,team,number){
 export default async function handler(req,res){
   res.setHeader('Cache-Control','s-maxage=300, stale-while-revalidate=600');
   try{
-    const {text,source}=await loadStats();
-    const all=parseCSV(text).filter(r=>String(r.season_type||'').toLowerCase()==='reg'&&num(r.season)===2026);
+    const {rows,source}=await loadStats();
+    const all=rows.filter(r=>String(r.season_type||'').toLowerCase()==='reg'&&num(r.season)===2026);
     const ar=all.filter(r=>norm(r.player_name).includes('arroyo')||norm(r.player_display_name).includes('arroyo'));
     const sa=all.filter(r=>norm(r.player_name).includes('sadiq')||norm(r.player_display_name).includes('sadiq'));
     const a=summary(ar,'Elijah Arroyo','SEA','18');
